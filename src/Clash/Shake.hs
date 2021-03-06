@@ -5,7 +5,10 @@ module Clash.Shake
     , ClashKit(..)
     , clashRules
     , SynthKit(..)
+
+    , WordSize(..)
     , binImage
+
     , useConfig
     ) where
 
@@ -23,8 +26,10 @@ import qualified Data.HashMap.Strict as HM
 import Data.Char (isUpper, toLower)
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
+import Data.Word
 import qualified System.Directory as Dir
 import Control.Exception (bracket)
+import Text.Printf
 
 import Clash.Driver.Types
 import Clash.Prelude (pack)
@@ -134,17 +139,40 @@ useConfig file = do
     forM_ (HM.lookup "TARGET" cfg) $ \target ->
       want [target </> "bitfile"]
 
-binImage :: Maybe Int -> FilePath -> FilePath -> Action ()
-binImage size src out = do
+data WordSize
+    = LowBits Int
+    | HighBits Int
+    deriving (Show)
+
+bitsOf :: WordSize -> [Word8] -> String
+bitsOf wsize = cut . concatMap (printf "%08b")
+  where
+    cut = case wsize of
+        LowBits n -> reverse . take n . reverse
+        HighBits n -> take n
+
+bytesPerWord :: WordSize -> Int
+bytesPerWord wsize = (n + 7) `div` 8
+  where
+    n = case wsize of
+        LowBits n -> n
+        HighBits n -> n
+
+binImage :: WordSize -> Maybe Int -> FilePath -> FilePath -> Action ()
+binImage wsize size src out = do
     need [src]
-    lines <- liftIO $ binLines size <$> BS.readFile src
+    lines <- liftIO $ binLines wsize size <$> BS.readFile src
     writeFileChanged out (unlines lines)
 
-binLines :: Maybe Int -> BS.ByteString -> [String]
-binLines size bs = map (filter (/= '_') . show . pack) bytes
+binLines :: WordSize -> Maybe Int -> BS.ByteString -> [String]
+binLines wsize size bs = map (bitsOf wsize) words
   where
-    bytes = maybe id ensureSize size $ BS.unpack bs
-    ensureSize size bs = take size $ bs <> repeat 0x00
+    bytes = BS.unpack bs
+    bpw = bytesPerWord wsize
+    words = maybe id ensureSize size $ chunksOf bpw bytes
+
+    ensureSize :: Int -> [[Word8]] -> [[Word8]]
+    ensureSize size xs = take (size * bpw) $ xs <> repeat (replicate bpw 0x00)
 
 isModuleName :: String -> Bool
 isModuleName = all (isUpper . head) . splitOn "."
